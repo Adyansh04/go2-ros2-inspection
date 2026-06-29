@@ -1,0 +1,9 @@
+# ZoneTask -- one uniform request/response shape for EVERY mission-control service, so the MCP layer
+# wraps them all with one client pattern. zone_id is ignored by services that don't need it (e.g.
+# start_exploration, get_status). result_json carries the structured payload (objects, paths, report,
+# status) as a JSON string; message is human-readable.
+string zone_id        # target zone id; '' or 'all' = every candidate zone (where the service supports it)
+---
+bool success
+string message
+string result_json

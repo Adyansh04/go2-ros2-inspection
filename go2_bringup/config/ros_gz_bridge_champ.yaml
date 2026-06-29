@@ -1,0 +1,68 @@
+# ros_gz bridge for the CHAMP walking Go2 (Harmonic). CHAMP takes ROS /cmd_vel directly and
+# provides odom via its state-estimation + EKF, so we only bridge sensors + clock.
+- ros_topic_name: "/clock"
+  gz_topic_name: "/clock"
+  ros_type_name: "rosgraph_msgs/msg/Clock"
+  gz_type_name: "gz.msgs.Clock"
+  direction: GZ_TO_ROS
+
+# L1 LiDAR 3D cloud (mirrors real Go2 /utlidar/cloud_deskewed, ADR-007)
+- ros_topic_name: "/utlidar/cloud_deskewed"
+  gz_topic_name: "/utlidar/points"
+  ros_type_name: "sensor_msgs/msg/PointCloud2"
+  gz_type_name: "gz.msgs.PointCloudPacked"
+  direction: GZ_TO_ROS
+
+# IMU (CHAMP/EKF state estimation)
+- ros_topic_name: "/imu/data"
+  gz_topic_name: "/imu"
+  ros_type_name: "sensor_msgs/msg/Imu"
+  gz_type_name: "gz.msgs.IMU"
+  direction: GZ_TO_ROS
+
+# Ground-truth base odometry from gz OdometryPublisher (EE26: the sim's single localization source;
+# consumed directly as /odom by RTAB-Map + Nav2 — no EKF in the loop).
+- ros_topic_name: "/odom"
+  gz_topic_name: "/odom_gz"
+  ros_type_name: "nav_msgs/msg/Odometry"
+  gz_type_name: "gz.msgs.Odometry"
+  direction: GZ_TO_ROS
+
+# odom -> base_link transform from the SAME OdometryPublisher (<tf_topic>odom_tf</tf_topic>).
+# Replaces the robot_localization EKF TF chain; RSP supplies base_link -> trunk -> sensors/legs.
+- ros_topic_name: "/tf"
+  gz_topic_name: "/odom_tf"
+  ros_type_name: "tf2_msgs/msg/TFMessage"
+  gz_type_name: "gz.msgs.Pose_V"
+  direction: GZ_TO_ROS
+
+# Front HD camera (mirrors the real Go2 head camera) -> ROS /camera/image_raw for inspection/detection
+- ros_topic_name: "/camera/image_raw"
+  gz_topic_name: "/camera/image"
+  ros_type_name: "sensor_msgs/msg/Image"
+  gz_type_name: "gz.msgs.Image"
+  direction: GZ_TO_ROS
+
+# CameraInfo (intrinsics) — needed by the RViz "Camera" display + any rectification/detection node.
+# Shared by RGB and the registered depth image (same rgbd_camera intrinsics).
+- ros_topic_name: "/camera/camera_info"
+  gz_topic_name: "/camera/camera_info"
+  ros_type_name: "sensor_msgs/msg/CameraInfo"
+  gz_type_name: "gz.msgs.CameraInfo"
+  direction: GZ_TO_ROS
+
+# RGBD depth image (32FC1, registered to RGB) — feeds rgbd_sync -> RTAB-Map's colour-only 3D cloud.
+- ros_topic_name: "/camera/depth/image_raw"
+  gz_topic_name: "/camera/depth_image"
+  ros_type_name: "sensor_msgs/msg/Image"
+  gz_type_name: "gz.msgs.Image"
+  direction: GZ_TO_ROS
+
+# Dense forward depth cloud (XYZ) — fed to the Nav2 costmaps as the low-obstacle source (camera_cloud) so the
+# robot avoids pallets/totes/boxes that the down-pitched L1 LiDAR misses in its near-field blind spot. The
+# costmap filters by GLOBAL-frame height (z>0.12) to reject the floor. (Was previously left unbridged.)
+- ros_topic_name: "/camera/points"
+  gz_topic_name: "/camera/points"
+  ros_type_name: "sensor_msgs/msg/PointCloud2"
+  gz_type_name: "gz.msgs.PointCloudPacked"
+  direction: GZ_TO_ROS

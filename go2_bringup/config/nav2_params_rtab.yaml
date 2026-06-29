@@ -1,0 +1,413 @@
+# Nav2 (Jazzy) for the Go2 — 2D, lean for the Orin (ADR-009). No AMCL: slam_toolbox owns
+# map->odom. allow_unknown:true so the planner can head toward frontiers into unmapped space.
+# Costmaps use /scan (the L1 cloud flattened). Footprint ~ Go2 (0.40 x 0.20 m).
+
+bt_navigator:
+  ros__parameters:
+    use_sim_time: true
+    global_frame: map
+    robot_base_frame: base_link
+    odom_topic: /odom
+    bt_loop_duration: 10
+    default_server_timeout: 20
+    navigators: ["navigate_to_pose", "navigate_through_poses"]
+    navigate_to_pose:
+      plugin: "nav2_bt_navigator::NavigateToPoseNavigator"
+    navigate_through_poses:
+      plugin: "nav2_bt_navigator::NavigateThroughPosesNavigator"
+
+controller_server:
+  ros__parameters:
+    use_sim_time: true
+    controller_frequency: 20.0    # MPPI needs period (1/freq=0.05) <= model_dt (0.05)
+    min_x_velocity_threshold: 0.001
+    min_y_velocity_threshold: 0.001    # Go2 is holonomic (can strafe) -> don't zero small lateral odom/cmds
+    min_theta_velocity_threshold: 0.001
+    failure_tolerance: 0.3
+    progress_checker_plugins: ["progress_checker"]
+    goal_checker_plugins: ["goal_checker"]
+    controller_plugins: ["FollowPath"]
+    progress_checker:
+      plugin: "nav2_controller::SimpleProgressChecker"
+      required_movement_radius: 0.4
+      movement_time_allowance: 20.0   # was 12 -- with min_vel_x=0 the robot turns IN PLACE to face goals
+                                       # behind it (no translation during the turn); 12s tripped the
+                                       # progress checker mid-turn -> false "Failed to make progress".
+    goal_checker:
+      plugin: "nav2_controller::SimpleGoalChecker"
+      xy_goal_tolerance: 0.35    # exploration: arrive NEAR the frontier, not pinpoint
+      yaw_goal_tolerance: 3.15   # IGNORE final heading — a frontier goal has no meaningful yaw, and
+                                 # enforcing one made MPPI spin-in-place at the goal (the "circling").
+      stateful: true
+    FollowPath:
+      # MPPI (Model Predictive Path Integral) — Nav2's sampling-based MPC, the modern flagship local
+      # controller. CHOSEN OVER DWB for the Go2 because (1) it has a native "Omni" motion model that
+      # samples vx+vy+wz JOINTLY (DWB bolts lateral on via vy_samples and rarely actually picks it),
+      # (2) it optimises over a 2.8 s receding horizon so it can plan MULTI-PHASE extraction maneuvers
+      # (reverse -> rotate -> strafe out of a wedge) that DWB's single 1.5 s rollout cannot, and (3)
+      # reverse is a first-class sampled control (vx_min<0) GATED by PreferForwardCritic, so the robot
+      # backs up ONLY to escape, never as default travel. The two reasons MPPI was reverted before are
+      # both fixed: "circling at the goal" was a goal-checker bug (yaw_goal_tolerance now 3.15 = ignore
+      # frontier heading) and is further killed by TwirlingCritic below; "reverse into unseen walls"
+      # was the REAL L1's front bias -- the SIM L1 is full 360 deg, so the costmap sees behind the robot.
+      # Docs: https://docs.nav2.org/configuration/packages/configuring-mppic.html
+      # REVERT to DWB: `git checkout HEAD -- config/nav2_params_rtab.yaml` (the DWB block is in history).
+      # NOTE: a RotationShimController wrapper was tried (to decouple big turns from MPPI sampling) but on
+      # this maze's jagged NavFn path it CHATTERED and once commanded wz=1.14 rad/s (>2x wz_max) -- reverted.
+      # MPPI handles its own rotation; the fix below is simply sizing the sampling stds for maneuverability.
+      plugin: "nav2_mppi_controller::MPPIController"
+
+      # --- horizon & sampling -- SIZED FOR REAL-TIME 20 Hz (compute starvation was the core bug) -----
+      # MPPI must finish each optimisation within 1/controller_frequency (0.05 s). With time_steps 56 +
+      # batch 2000 + consider_footprint=true the loop COLLAPSED to 5-10 Hz on this machine; a starved MPPI
+      # produces no usable trajectory -> "Failed to make progress" -> the BT fires a SPIN recovery -> the
+      # robot dithers/spins and looks like it "can't rotate/move". Measured fix below: steady ~20 Hz, ZERO
+      # rate-miss / failed-progress / recovery events.
+      time_steps: 40          # 40 * 0.05 = 2.0 s horizon (plenty at 0.26 m/s); was 56 -> ~30% less compute.
+      model_dt: 0.05          # integration step; must be >= 1/controller_frequency (1/20 = 0.05). OK.
+      batch_size: 1000        # trajectories per cycle; was 2000. 1000 keeps the loop real-time and is still
+                              #   dense enough to plan turns/strafes. Raise only if you have CPU headroom.
+      # SAMPLING STD DEVS — the std is HOW WIDELY MPPI explores each velocity axis: it can only execute a
+      # maneuver it actually SAMPLES. Too LARGE (Nav2 default 0.2/0.2/0.4, tuned for a vx_max=0.5/wz_max=1.9
+      # robot) made the slow Go2 JITTER (vy_std 0.2 > vy_max!). Too SMALL (0.10/0.05/0.15) was smooth but the
+      # robot could no longer sample a strafe or a brisk turn -> "can't move sideways / can't rotate". The
+      # values below are the balance: big enough to reliably sample strafes and turns, scaled to the Go2's
+      # small envelope so it doesn't degenerate into noise. (Some straight-line wz wiggle is the unavoidable
+      # cost of keeping enough rotational sampling on a robot this slow; verified maneuverable in maze.sdf.)
+      vx_std: 0.15            # forward exploration (~0.58 of vx_max).
+      vy_std: 0.10            # LATERAL exploration -- must be large enough to actually sample a strafe
+                              #   (vy_max 0.15). 0.05 was too small (robot never strafed); 0.10 restores sidestep.
+      wz_std: 0.30            # yaw exploration. MUST be ample (~0.6 of wz_max) or MPPI can't sample a brisk
+                              #   in-place turn and the robot won't rotate to face goals. 0.15 was too small.
+
+      # --- kinodynamic limits (MATCH the Go2 trot; same envelope as the old DWB block) --------------
+      vx_max: 0.26            # forward trot max.
+      vx_min: -0.15           # REVERSE ENABLED -- sim L1 is full 360 deg so the costmap sees behind us.
+                              #   Modest magnitude: the Go2 reverse trot is less stable than forward.
+                              #   *** REAL-ROBOT: the physical L1 is FRONT-BIASED. Set vx_min: 0.0 before
+                              #   any real deployment or the robot reverses blind. Sim-only here. ***
+      vy_max: 0.15            # strafe; Omni samples vy in [-vy_max, vy_max]. Matches the validated sweep
+                              #   strafe speed; raise toward 0.25 if stable.
+      wz_max: 0.5             # yaw rate (== behavior_server max_rotational_vel; enough for in-place reorient).
+      ax_max: 0.6             # fwd accel    (== old DWB acc_lim_x).
+      ax_min: -0.6            # decel        (== old DWB decel_lim_x).
+      ay_max: 0.6             # lateral accel (== old DWB acc_lim_y).
+      az_max: 1.0             # yaw accel    (== old DWB acc_lim_theta). Keeping accels REALISTIC stops MPPI
+                              #   proposing trajectories the CHAMP gait can't physically track.
+
+      # --- optimiser ---------------------------------------------------------------------------------
+      iteration_count: 1      # MPPI optimisation passes per cycle (1 is standard; the horizon recedes).
+      prune_distance: 1.7     # how far along the global path to track each cycle (m).
+      transform_tolerance: 1.0   # RTAB-Map localization republishes map->odom at 20 Hz but only ADVANCES the
+                              #   stamp at its ~2 Hz processing rate, so map->odom intermittently lags sim-now
+                              #   by up to ~0.6 s. At 0.2 s the controller's goal-pose transform hit "Lookup
+                              #   would require extrapolation into the future" and ABORTED every goal (status
+                              #   6). 1.0 s absorbs the lag spikes. (TF/time-class fix.)
+      temperature: 0.3        # softmax selectiveness over trajectory costs (lower = greedier). Default.
+      gamma: 0.015            # control-effort penalty (smoothness). Default.
+      motion_model: "Omni"    # <<< KEY: holonomic Go2 -> sample vx+vy+wz. ("DiffDrive" would drop vy.)
+      visualize: false        # OFF by default: publishing the 2000-trajectory MarkerArray cut the control
+                              #   rate 20 Hz -> 13 Hz (measured), and a starved controller hunts more (docs:
+                              #   "slows compute time significantly ... not suggested during deployed use").
+                              #   To SEE trajectories in RViz on demand (the display is already in go2_full.rviz):
+                              #     ros2 param set /controller_server FollowPath.visualize true
+                              #   ...then set it false again for clean 20 Hz driving.
+      regenerate_noises: true # fresh Gaussian noise each cycle (better tight-space sampling; sim CPU is ok).
+      TrajectoryVisualizer:
+        trajectory_step: 5
+        time_step: 3
+      AckermannConstraints:
+        min_turning_r: 0.0    # unused by the Omni model; harmless.
+
+      critics: ["ConstraintCritic", "CostCritic", "GoalCritic", "GoalAngleCritic",
+                "PreferForwardCritic", "PathAlignCritic", "PathFollowCritic", "PathAngleCritic",
+                "TwirlingCritic"]
+
+      ConstraintCritic:       # keep samples inside the velocity/accel envelope above.
+        enabled: true
+        cost_power: 1
+        cost_weight: 4.0
+      CostCritic:             # obstacle avoidance straight from the costmap.
+        enabled: true
+        cost_power: 1
+        cost_weight: 3.81
+        critical_cost: 300.0
+        consider_footprint: false  # CIRCULAR check (was true). Full-polygon footprint collision over
+                                   #   batch*time_steps points is what tipped the loop below 20 Hz -> starved
+                                   #   MPPI -> recoveries. false = ~circumscribed-radius check, far cheaper.
+                                   #   Trade-off: the robot is treated as a ~0.38 m circle so it won't try to
+                                   #   squeeze SIDEWAYS through gaps <~0.76 m; reliable real-time control is
+                                   #   worth more than tight-gap squeezing. (Costmap inflation still avoids walls.)
+        collision_cost: 1000000.0
+        near_goal_distance: 1.0
+      GoalCritic:             # pull toward the goal point.
+        enabled: true
+        cost_power: 1
+        cost_weight: 5.0
+        threshold_to_consider: 1.4
+      GoalAngleCritic:        # achieve final heading. LOW weight + acts only within 0.5 m: frontier goals
+        enabled: true         #   carry NO meaningful yaw (goal_checker yaw_tol=3.15), so don't let it
+        cost_power: 1         #   force a spin on arrival.
+        cost_weight: 3.0
+        threshold_to_consider: 0.5
+      PreferForwardCritic:    # ENABLED @ 3.0 -- this is the "prefer ROTATING over reversing" dial. Source
+        enabled: true         #   (prefer_forward_critic.cpp): cost = sum(max(-vx,0))*dt*weight -- it taxes
+        cost_power: 1         #   ONLY reverse vx; in-place rotation (vx~0,wz!=0) is FREE to it. So with
+        cost_weight: 3.0      #   PathAngleCritic mode 0 (below) making a rear path costly, rotate-to-face
+        threshold_to_consider: 0.5  # beats reverse. Weight is the trade dial: too high (5) -> at a
+                              #   straight-behind ~180 goal it refuses reverse but can't break the rotation
+                              #   symmetry -> dithers; 3.0 keeps reverse as a graceful LAST-RESORT fallback so
+                              #   the robot reaches the goal instead of stalling. Skipped within 0.5 m of goal
+                              #   (lets it back up to dock). *** REAL-ROBOT: raise to ~5 AND set vx_min: 0.0 --
+                              #   the front-biased L1 can't see behind, so free reverse is sim-only. ***
+      PathAlignCritic:        # stay ON the (now centre-biased) NavFn path. PRIMARY anti-wall-hug term:
+        enabled: true         #   MPPI tracks the centred global plan instead of cutting corners.
+        cost_power: 1
+        cost_weight: 14.0
+        max_path_occupancy_ratio: 0.05
+        trajectory_point_step: 4
+        threshold_to_consider: 0.5
+        offset_from_furthest: 20
+        use_path_orientations: false   # the frontier path has no meaningful per-point yaw.
+      PathFollowCritic:       # make progress toward the furthest reachable path point.
+        enabled: true
+        cost_power: 1
+        cost_weight: 5.0
+        offset_from_furthest: 5
+        threshold_to_consider: 1.4
+      PathAngleCritic:        # mode 0 = FORWARD_PREFERENCE. THE key "rotate to face the path" term. Source
+        enabled: true         #   (path_angle_critic.cpp): mode 0 measures heading strictly vs the path point
+        cost_power: 1         #   bearing (NO +/-pi mirror), so a path point BEHIND the robot stays costly
+        cost_weight: 2.0      #   until the body ROTATES to face it. mode 1 (old) took min(yaw, yaw+pi) =
+        offset_from_furthest: 4  #  gave reverse a free heading pass, which is WHY the robot used to reverse
+        threshold_to_consider: 0.5  # to rear goals. Weight kept at 2.0 (~README default): raising it widens
+        max_angle_to_furthest: 1.0  # the near-pi "all candidates costly" zone and re-triggers dithering.
+        mode: 0
+      TwirlingCritic:         # penalise aimless spin. NOTE: runtime param names are cost_power/cost_weight
+        enabled: true         #   (the old twirling_cost_* names were SILENTLY IGNORED -> ran at default 10).
+        cost_power: 1         #   Lowered 10 -> 2: at 10 it taxed the very wz of a purposeful rotate-to-face
+        cost_weight: 2.0      #   and re-created dithering. 2.0 still damps idle spinning; circling-at-goal is
+                              #   already prevented by goal_checker yaw_goal_tolerance 3.15 (no terminal yaw).
+
+planner_server:
+  ros__parameters:
+    use_sim_time: true
+    expected_planner_frequency: 2.0
+    planner_plugins: ["GridBased"]
+    GridBased:
+      plugin: "nav2_navfn_planner::NavfnPlanner"
+      tolerance: 1.0     # accept a path ending within 1m of the frontier goal (fewer plan failures)
+      use_astar: false   # Dijkstra: explores the full inflated costmap -> smoother, CENTRED paths. A* biases
+                         # toward the goal and can shortcut along walls (research-backed wall-hugging cause).
+      allow_unknown: true
+
+behavior_server:
+  ros__parameters:
+    use_sim_time: true
+    local_costmap_topic: local_costmap/costmap_raw
+    local_footprint_topic: local_costmap/published_footprint
+    global_costmap_topic: global_costmap/costmap_raw
+    global_footprint_topic: global_costmap/published_footprint
+    cycle_frequency: 10.0
+    # Recovery behaviors (fired by the BT recovery subtree, and reusable on the REAL Go2):
+    #   backup           — reverse straight out when wedged against a wall (the key escape)
+    #   spin             — rotate in place to find a clear heading
+    #   drive_on_heading — nudge forward along a clear heading after backing up
+    #   wait             — pause for a moving obstacle (warehouse has walking people) to clear
+    behavior_plugins: ["spin", "backup", "drive_on_heading", "wait"]
+    spin:
+      plugin: "nav2_behaviors::Spin"
+    backup:
+      plugin: "nav2_behaviors::BackUp"
+    drive_on_heading:
+      plugin: "nav2_behaviors::DriveOnHeading"
+    wait:
+      plugin: "nav2_behaviors::Wait"
+    simulate_ahead_time: 1.5
+    max_rotational_vel: 0.5
+    min_rotational_vel: 0.2
+    rotational_acc_lim: 1.0
+    local_frame: odom
+    global_frame: map
+    robot_base_frame: base_link
+    transform_tolerance: 1.0   # absorb rtabmap map->odom lag spikes (same TF/time fix as the controller)
+
+velocity_smoother:
+  ros__parameters:
+    use_sim_time: true
+    smoothing_frequency: 20.0
+    scale_velocities: false
+    feedback: "OPEN_LOOP"
+    max_velocity: [0.30, 0.15, 0.8]    # y enabled for omni (consistent with DWB); note: smoother not launched
+    min_velocity: [-0.15, -0.15, -0.8]
+    max_accel: [1.0, 0.6, 2.0]
+    max_decel: [-1.0, -0.6, -2.0]
+    odom_topic: "/odom"
+    odom_duration: 0.1
+
+local_costmap:
+  local_costmap:
+    ros__parameters:
+      use_sim_time: true
+      global_frame: odom
+      robot_base_frame: base_link
+      transform_tolerance: 1.0   # controller_server transforms the GOAL into this costmap's frame using
+                              #   THIS tolerance as the tf2 wait-timeout; rtabmap map->odom lags sim-now, so
+                              #   at the 0.3 s default the goal transform threw "extrapolation into the
+                              #   future" and aborted every goal. 1.0 s lets map->odom catch up. (TF/time fix.)
+      update_frequency: 5.0
+      publish_frequency: 2.0
+      rolling_window: true
+      width: 4
+      height: 4
+      resolution: 0.05
+      footprint: "[[0.35,0.155],[0.35,-0.155],[-0.35,-0.155],[-0.35,0.155]]"   # 0.70x0.31 — Unitree Go2
+      # STANDARD standing footprint (real-robot spec). Robustly bounds the modeled body: trunk 0.376m,
+      # the front L1/camera head at x=+0.30 (the OLD 0.52x0.32 box CLIPPED it), and the leg stance/swing
+      # (hips x=±0.19, feet y≈±0.14). Width 0.31 stays the aisle-limiting dim; +footprint_padding below.
+      footprint_padding: 0.05
+      # RTAB-Map variant: NO static_layer here. rtabmap publishes /map sparsely (only on new graph
+      # nodes), so a StaticLayer subscribed to it stalls with "no map received" -> the WHOLE local
+      # costmap "times out waiting for update" -> DWB never gets a costmap -> aborts every goal -> robot
+      # frozen. Walls for local collision-checking come from the obstacle_layer (/scan, 10Hz, reliable).
+      plugins: ["obstacle_layer", "inflation_layer"]
+      obstacle_layer:
+        plugin: "nav2_costmap_2d::ObstacleLayer"
+        enabled: true
+        observation_sources: scan camera_cloud
+        scan:
+          topic: /scan
+          max_obstacle_height: 2.0
+          clearing: true
+          marking: true
+          data_type: "LaserScan"
+          raytrace_max_range: 8.0
+          obstacle_max_range: 6.0
+        # Forward depth-camera cloud: catches LOW obstacles (pallets, totes, boxes) that the DOWN-PITCHED L1
+        # LiDAR misses in its near-field blind spot (it raked over / cleared them and the robot drove in).
+        # min/max_obstacle_height are in the GLOBAL frame (true z above ground), so the floor (z<0.12) is
+        # rejected regardless of the legged robot's gait pitch -- a base_link height band could not (the body
+        # pitches, so the floor's base_link-z drifts). /camera/points is bridged from the gz rgbd_camera.
+        camera_cloud:
+          topic: /camera/points
+          data_type: "PointCloud2"
+          min_obstacle_height: 0.12
+          max_obstacle_height: 1.5
+          clearing: true
+          marking: true
+          obstacle_max_range: 4.0    # camera depth reliable to ~4 m; plenty of warning before collision
+          raytrace_max_range: 5.0
+      inflation_layer:
+        plugin: "nav2_costmap_2d::InflationLayer"
+        cost_scaling_factor: 1.0     # LOW = wide, gentle gradient -> a cost basin that CENTRES the path in
+                                     # corridors. A high factor (Nav2 default 10) is the classic wall-hugger.
+        inflation_radius: 0.55       # CP48: 0.7 filled the narrow maze corridors edge-to-edge (gradients from
+                                     # both walls met -> NO clear lane -> planner stuck at the corridor mouth).
+                                     # 0.35 keeps ~0.20m off the footprint edge and still centres the path in a
+                                     # corridor; nudge up only if the gait clips walls near doorways.
+
+global_costmap:
+  global_costmap:
+    ros__parameters:
+      use_sim_time: true
+      global_frame: map
+      robot_base_frame: base_link
+      transform_tolerance: 1.0   # absorb rtabmap map->odom lag spikes (same TF/time fix as the controller)
+      update_frequency: 1.0
+      publish_frequency: 1.0
+      resolution: 0.05
+      track_unknown_space: true
+      always_send_full_costmap: true   # republish the FULL costmap every cycle (robust for subscribers)
+      # RTAB-Map variant (Go2-Inspector architecture): the global costmap sizes itself to rtabmap's /map,
+      # which now has real free cells (Grid/Sensor=0). The static_layer uses that loop-closure-corrected
+      # grid, so the planner and the frontier_explorer (which reads /map directly) share ONE consistent
+      # map. The obstacle_layer (/scan) adds live obstacles on top. map->odom localization is rtabmap's.
+      footprint: "[[0.35,0.155],[0.35,-0.155],[-0.35,-0.155],[-0.35,0.155]]"   # 0.70x0.31 — Unitree Go2
+      # STANDARD standing footprint (real-robot spec). Robustly bounds the modeled body: trunk 0.376m,
+      # the front L1/camera head at x=+0.30 (the OLD 0.52x0.32 box CLIPPED it), and the leg stance/swing
+      # (hips x=±0.19, feet y≈±0.14). Width 0.31 stays the aisle-limiting dim; +footprint_padding below.
+      footprint_padding: 0.05
+      plugins: ["static_layer", "obstacle_layer", "inflation_layer"]
+      static_layer:
+        plugin: "nav2_costmap_2d::StaticLayer"
+        map_subscribe_transient_local: true
+      obstacle_layer:
+        plugin: "nav2_costmap_2d::ObstacleLayer"
+        enabled: true
+        observation_sources: scan camera_cloud
+        scan:
+          topic: /scan
+          max_obstacle_height: 2.0
+          clearing: true
+          marking: true
+          data_type: "LaserScan"
+          raytrace_max_range: 8.0
+          obstacle_max_range: 6.0
+        # Same forward depth-camera low-obstacle source as the local costmap (see note there) so the GLOBAL
+        # planner also routes around pallets/totes the LiDAR misses. Global-frame height filter rejects floor.
+        camera_cloud:
+          topic: /camera/points
+          data_type: "PointCloud2"
+          min_obstacle_height: 0.12
+          max_obstacle_height: 1.5
+          clearing: true
+          marking: true
+          obstacle_max_range: 4.0
+          raytrace_max_range: 5.0
+      inflation_layer:
+        plugin: "nav2_costmap_2d::InflationLayer"
+        cost_scaling_factor: 1.0     # LOW = wide, gentle gradient -> a cost basin that CENTRES the path in
+                                     # corridors. A high factor (Nav2 default 10) is the classic wall-hugger.
+        inflation_radius: 0.65       # Raised 0.55->0.65: global planner was cutting corners (hugging walls)
+                                     # because zero-cost cells existed just outside 0.55m from walls; the wider
+                                     # inflated zone forces NavFn to route through higher-cost cells at corners.
+                                     # Risk: corridors narrower than ~1.35m may become impassable (planner
+                                     # returns no path); if that happens reduce back to 0.60. Local costmap
+                                     # stays at 0.55 for responsive real-obstacle avoidance. (CP48 note: 0.7
+                                     # filled corridors -- 0.65 gives the push without fully blocking them.)
+
+# NOTE: go2_bringup/nav2.launch.py deliberately does NOT launch the collision_monitor (under
+# navigation_launch.py it force-starts and aborted lifecycle bringup here), so this block is INERT in our
+# stack -- controller_server publishes /cmd_vel directly and CHAMP consumes it. Because nothing here
+# protects motion, the zone_sweeper's open-loop strafe SELF-GUARDS via a /scan lateral-clearance gate
+# (zone_sweeper.py _lateral_clear). Config below is unused unless a future bringup re-enables the chain.
+collision_monitor:
+  ros__parameters:
+    use_sim_time: true
+    base_frame_id: "base_link"
+    odom_frame_id: "odom"
+    cmd_vel_in_topic: "cmd_vel_smoothed"
+    cmd_vel_out_topic: "cmd_vel"
+    transform_tolerance: 0.2
+    source_timeout: 1.0
+    base_shift_correction: True
+    stop_pub_timeout: 2.0
+    enable_stamped_cmd_vel: false      # CHAMP subscribes geometry_msgs/Twist, not TwistStamped
+    polygons: ["FootprintApproach"]
+    FootprintApproach:
+      type: "polygon"
+      action_type: "approach"
+      footprint_topic: "/local_costmap/published_footprint"
+      time_before_collision: 1.2
+      simulation_time_step: 0.1
+      min_points: 6
+      visualize: False
+      enabled: True
+    observation_sources: ["scan"]
+    scan:
+      type: "scan"
+      topic: "/scan"
+      min_height: 0.15
+      max_height: 2.0
+      enabled: True
+
+# Path smoother — bt_navigator's default NavigateToPose BT calls SmoothPath (smoother_server).
+smoother_server:
+  ros__parameters:
+    use_sim_time: true
+    smoother_plugins: ["simple_smoother"]
+    simple_smoother:
+      plugin: "nav2_smoother::SimpleSmoother"
+      tolerance: 1.0e-10
+      max_its: 1000
+      do_refinement: True

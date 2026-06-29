@@ -1,0 +1,63 @@
+<?xml version="1.0"?>
+<package format="3">
+  <name>go2_bringup</name>
+  <version>0.1.0</version>
+  <description>Bringup: gz sim + ros_gz bridge + slam_toolbox + Nav2 launch</description>
+  <maintainer email="manasreddyarumalla@gmail.com">team</maintainer>
+  <license>MIT</license>
+  <buildtool_depend>ament_cmake</buildtool_depend>
+
+  <!-- Simulation bridge -->
+  <exec_depend>ros_gz_sim</exec_depend>
+  <exec_depend>ros_gz_bridge</exec_depend>
+  <exec_depend>ros_gz_image</exec_depend>
+
+  <!-- Robot description / state -->
+  <exec_depend>robot_state_publisher</exec_depend>
+  <exec_depend>joint_state_publisher</exec_depend>
+  <exec_depend>xacro</exec_depend>
+  <exec_depend>rviz2</exec_depend>
+
+  <!-- SLAM -->
+  <exec_depend>slam_toolbox</exec_depend>
+  <exec_depend>rtabmap_slam</exec_depend>
+  <exec_depend>rtabmap_sync</exec_depend>
+  <exec_depend>octomap_server</exec_depend>
+
+  <!-- Nav2 (declared individually so rosdep installs each) -->
+  <exec_depend>nav2_bringup</exec_depend>
+  <exec_depend>nav2_map_server</exec_depend>
+  <exec_depend>nav2_lifecycle_manager</exec_depend>
+  <exec_depend>nav2_controller</exec_depend>
+  <exec_depend>nav2_planner</exec_depend>
+  <exec_depend>nav2_smoother</exec_depend>
+  <exec_depend>nav2_behaviors</exec_depend>
+  <exec_depend>nav2_bt_navigator</exec_depend>
+
+  <!-- Exploration -->
+  <exec_depend>explore_lite</exec_depend>
+  <exec_depend>pointcloud_to_laserscan</exec_depend>
+
+  <!-- Control: gz_ros2_control hosts controller_manager INSIDE Gazebo Harmonic; the gait streams
+       to a JointTrajectoryController (go2_config/ros_control.yaml). Without these the dog spawns
+       with limp legs and never responds to /cmd_vel. -->
+  <exec_depend>gz_ros2_control</exec_depend>
+  <exec_depend>controller_manager</exec_depend>
+  <exec_depend>joint_state_broadcaster</exec_depend>
+  <exec_depend>joint_trajectory_controller</exec_depend>
+  <exec_depend>twist_mux</exec_depend>
+
+  <!-- Local workspace packages -->
+  <exec_depend>go2_description</exec_depend>
+  <exec_depend>go2_config</exec_depend>
+  <exec_depend>go2_worlds</exec_depend>
+  <exec_depend>go2_exploration</exec_depend>
+  <exec_depend>go2_inspection</exec_depend>
+  <exec_depend>go2_inspection_interfaces</exec_depend>
+  <exec_depend>go2_zones</exec_depend>
+  <exec_depend>champ_bringup</exec_depend>
+  <exec_depend>champ_base</exec_depend>
+  <export>
+    <build_type>ament_cmake</build_type>
+  </export>
+</package>
