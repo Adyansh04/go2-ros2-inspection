@@ -15,7 +15,7 @@
   <!-- Ground-truth base odometry from gz (real Go2's onboard estimator equivalent). Publishes BOTH the
        Odometry msg (gz /odom_gz -> bridged to ROS /odom) AND the odom->base_link transform (gz /odom_tf
        -> bridged to ROS /tf). This is the sim's single localization source: no robot_localization / EKF /
-       state_estimation needed (EE26 cleanup). For the real robot, swap this for a hardware odom + EKF. -->
+       state_estimation needed. For the real robot, swap this for a hardware odom + EKF. -->
   <gazebo>
     <plugin filename="gz-sim-odometry-publisher-system" name="gz::sim::systems::OdometryPublisher">
       <odom_frame>odom</odom_frame>
@@ -81,10 +81,10 @@
           <vertical><samples>32</samples><resolution>1</resolution>
             <min_angle>-0.785</min_angle><max_angle>0.785</max_angle></vertical>
         </scan>
-        <!-- min 0.15: self-hits on the dog's own trunk/legs are removed GEOMETRICALLY by the
-             self_filter node (go2_exploration), not by a big dead zone. A small min lets the costmap
-             SEE + CLEAR walls right next to the robot -> fixes both the wall-trap (static_layer +
-             dead zone) and wall-climbing (no static_layer). See self_filter.cpp / ADR-013. -->
+        <!-- min 0.15: self-hits on the dog's own trunk/legs are removed geometrically by the
+             self_filter node (go2_exploration), not by a large dead zone. A small min range lets the
+             costmap see and clear walls right next to the robot, avoiding both wall-trapping and
+             wall-climbing failure modes. See self_filter.cpp / ADR-013. -->
         <range><min>0.15</min><max>30.0</max><resolution>0.01</resolution></range>
       </lidar>
     </sensor>
@@ -110,7 +110,10 @@
       <topic>camera</topic>
       <gz_frame_id>camera_link</gz_frame_id>
       <optical_frame_id>camera_link_optical</optical_frame_id>   <!-- image+depth+CameraInfo in the z-forward optical frame -->
-      <update_rate>30</update_rate>
+      <update_rate>30</update_rate>   <!-- Streaming a full 640x480 RGBD + /camera/points can flood both
+           Nav2 costmaps' obstacle layers ("message filter: queue full" -> dropped frames + wasted CPU).
+           This rate is ample for obstacle detection, inspection/YOLOE, and viz; the costmap consumes
+           well under it anyway. -->
       <always_on>true</always_on>
       <camera>
         <horizontal_fov>1.396</horizontal_fov>

@@ -10,9 +10,10 @@ dedup, crops) -> returns HOME -> writes one facility report + facility map.
   ros2 launch go2_bringup mission.launch.py zones:=zone_0,zone_3 # a subset (testing)
 
 The nav foundation alone is available via inspection_nav.launch.py and a single zone via
-`ros2 run go2_inspection zone_inspector`. Requires FASTDDS_BUILTIN_TRANSPORTS=UDPv4 (CP39) and the
+`ros2 run go2_inspection zone_inspector`. Requires FASTDDS_BUILTIN_TRANSPORTS=UDPv4 and the
 maps at ~/.go2_maps.
 """
+
 import os
 from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
@@ -29,13 +30,17 @@ def generate_launch_description():
         launch_arguments={"headless": LaunchConfiguration("headless")}.items(),
     )
     mission = Node(
-        package="go2_inspection", executable="inspection_mission", output="screen",
+        package="go2_inspection",
+        executable="inspection_mission",
+        output="screen",
         parameters=[{"use_sim_time": True, "zones": LaunchConfiguration("zones")}],
     )
-    return LaunchDescription([
-        DeclareLaunchArgument("headless", default_value="true"),
-        DeclareLaunchArgument("zones", default_value=""),     # "" = all gauge rooms
-        nav,
-        # start the mission after localization (DB load) + Nav2 are fully up
-        TimerAction(period=100.0, actions=[mission]),
-    ])
+    return LaunchDescription(
+        [
+            DeclareLaunchArgument("headless", default_value="true"),
+            DeclareLaunchArgument("zones", default_value=""),  # "" = all gauge rooms
+            nav,
+            # start the mission after localization (DB load) + Nav2 are fully up
+            TimerAction(period=100.0, actions=[mission]),
+        ]
+    )

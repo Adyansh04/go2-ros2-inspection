@@ -1,7 +1,7 @@
 <?xml version="1.0"?>
-<!-- Go2 for Gazebo HARMONIC (ADR-010): real meshes + legs (CHAMP lf/rf/lh/rh) + the L1 LiDAR
+<!-- Go2 for Gazebo Harmonic: real meshes + legs (CHAMP lf/rf/lh/rh) + the L1 LiDAR
      mount + gz_ros2_control/gz sensors (gazebo_gz.xacro). Same kinematics as robot.xacro;
-     only the Gazebo integration differs (Classic -> Harmonic). -->
+     only the Gazebo integration differs (Classic vs Harmonic). -->
 <robot name="go2" xmlns:xacro="http://www.ros.org/wiki/xacro">
 
   <xacro:include filename="$(find go2_description)/xacro/const.xacro"/>

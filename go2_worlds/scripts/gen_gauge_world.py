@@ -12,6 +12,7 @@ symlink + paths.
 
   python3 gen_gauge_world.py
 """
+
 import os, json
 
 here = os.path.dirname(os.path.abspath(__file__))
@@ -28,28 +29,30 @@ if os.path.islink(LINK) or os.path.exists(LINK):
     except OSError:
         pass
 os.symlink(tex_dir, LINK)
-TEX = LINK   # absolute, no-space
+TEX = LINK  # absolute, no-space
 
 gt = json.load(open(os.path.join(tex_dir, "gauges_groundtruth.json")))
-GAUGE_X = [-3.5, -2.0, -0.5, 1.0, 2.5, 4.0]   # along the south wall
-WALL_Y, Z = -9.85, 0.60                        # just in front of the inner wall face, camera height
+GAUGE_X = [-3.5, -2.0, -0.5, 1.0, 2.5, 4.0]  # along the south wall
+WALL_Y, Z = -9.85, 0.60  # just in front of the inner wall face, camera height
 
 
 def gauge_xml(i, x):
-    return (f'    <model name="gauge_{i:02d}"><static>true</static>\n'
-            f'      <pose>{x} {WALL_Y} {Z} 0 0 0</pose>\n'
-            f'      <link name="link"><visual name="face">\n'
-            f'        <geometry><box><size>0.26 0.03 0.26</size></box></geometry>\n'
-            f'        <material>\n'
-            f'          <ambient>1 1 1 1</ambient><diffuse>1 1 1 1</diffuse><specular>0 0 0 1</specular>\n'
-            f'          <pbr><metal>\n'
-            f'            <albedo_map>{TEX}/gauge_{i:02d}.png</albedo_map>\n'
-            f'            <emissive_map>{TEX}/gauge_{i:02d}.png</emissive_map>\n'
-            f'            <metalness>0.0</metalness><roughness>1.0</roughness>\n'
-            f'          </metal></pbr>\n'
-            f'        </material>\n'
-            f'      </visual></link>\n'
-            f'    </model>')
+    return (
+        f'    <model name="gauge_{i:02d}"><static>true</static>\n'
+        f"      <pose>{x} {WALL_Y} {Z} 0 0 0</pose>\n"
+        f'      <link name="link"><visual name="face">\n'
+        f"        <geometry><box><size>0.26 0.03 0.26</size></box></geometry>\n"
+        f"        <material>\n"
+        f"          <ambient>1 1 1 1</ambient><diffuse>1 1 1 1</diffuse><specular>0 0 0 1</specular>\n"
+        f"          <pbr><metal>\n"
+        f"            <albedo_map>{TEX}/gauge_{i:02d}.png</albedo_map>\n"
+        f"            <emissive_map>{TEX}/gauge_{i:02d}.png</emissive_map>\n"
+        f"            <metalness>0.0</metalness><roughness>1.0</roughness>\n"
+        f"          </metal></pbr>\n"
+        f"        </material>\n"
+        f"      </visual></link>\n"
+        f"    </model>"
+    )
 
 
 def main():
@@ -62,7 +65,9 @@ def main():
     print(f"  textures via no-space symlink: {LINK} -> {tex_dir}")
     print(f"  {len(gt)} gauges on the SOUTH wall: Y={WALL_Y}, z={Z}, X={GAUGE_X}")
     for g, x in zip(gt, GAUGE_X):
-        print(f"    {g['id']}: {g['type']} {g['true_reading']}{g['unit']} (range {g['range_min']}-{g['range_max']}) @ x={x}")
+        print(
+            f"    {g['id']}: {g['type']} {g['true_reading']}{g['unit']} (range {g['range_min']}-{g['range_max']}) @ x={x}"
+        )
 
 
 if __name__ == "__main__":

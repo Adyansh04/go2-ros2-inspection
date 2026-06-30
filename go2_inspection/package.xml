@@ -6,7 +6,8 @@
   <description>Autonomous object inspection for the Go2: zone segmentation, zone_inspector (viewpoint +
   360-degree spin live YOLOE detection with depth->map localization, dedup, crops, per-zone + facility
   reports/maps), a mission orchestrator, the ROS2 service layer, and the MCP mission server.</description>
-  <maintainer email="manasreddyarumalla@gmail.com">EE26 team</maintainer>
+  <maintainer email="gupta.adyansh@gmail.com">Adyansh Gupta</maintainer>
+  <author email="gupta.adyansh@gmail.com">Adyansh Gupta</author>
   <license>Apache-2.0</license>
 
   <!-- ROS -->

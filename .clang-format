@@ -1,0 +1,10 @@
+# clang-format style for the go2-inspection C++ sources (go2_exploration, go2_config).
+# Google base with project tweaks:
+#   ColumnLimit 100   - matches the existing code width
+#   SortIncludes false- preserve hand-ordered include groups (do not reorder)
+#   ReflowComments false - keep curated comment wrapping intact
+Language: Cpp
+BasedOnStyle: Google
+ColumnLimit: 100
+SortIncludes: false
+ReflowComments: false

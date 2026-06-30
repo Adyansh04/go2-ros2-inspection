@@ -1,9 +1,9 @@
-"""sim_mapping.launch.py -- ONE COMMAND for MODE A (mapping / frontier exploration).
+"""sim_mapping.launch.py -- single-command bringup for MODE A (mapping / frontier exploration).
 
-Brings up the sim + RTAB-Map SLAM (T1) and then STAGES Nav2 (T2) behind a timer, so you no longer
-have to hand-time two terminals. The old failure was launching nav2.launch.py before RTAB-Map had
-published map->odom -> Nav2's global_costmap logs "Invalid frame ID 'map' ... frame does not exist"
-(and can abort the lifecycle bringup). Here Nav2 only starts AFTER RTAB-Map is publishing map->odom.
+Brings up the sim + RTAB-Map SLAM and then stages Nav2 behind a timer. Nav2 must not start before
+RTAB-Map has published map->odom, otherwise Nav2's global_costmap logs "Invalid frame ID 'map' ...
+frame does not exist" and can abort the lifecycle bringup. The timer ensures Nav2 only starts after
+RTAB-Map is publishing map->odom.
 
 Timeline (all timers are relative to launch t=0; rtabmap_slam's own internal timers run inside it):
   t=0   gz + CHAMP gait spin up (inside rtabmap_slam -> go2_champ)
@@ -18,11 +18,12 @@ Timeline (all timers are relative to launch t=0; rtabmap_slam's own internal tim
   ros2 launch go2_bringup sim_mapping.launch.py with_nav2:=false         # sim+rtabmap only (no nav2)
 
 After this is up, start MODE A's driver/services in their own terminals (frontier_explorer or
-mission_control), exactly as before -- this launcher only replaces the T1+T2 pair.
+mission_control). This launcher only handles the sim+SLAM+Nav2 bringup.
 
-NOTE: this mirrors inspection_nav.launch.py for the LOCALIZATION/inspection (MODE B) path -- use
-mission.launch.py / inspection_nav.launch.py for that. This file is the fresh-mapping counterpart.
+This is the fresh-mapping counterpart to inspection_nav.launch.py, which covers the
+localization/inspection (MODE B) path.
 """
+
 import os
 from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
@@ -37,9 +38,9 @@ def generate_launch_description():
     pkg = get_package_share_directory("go2_bringup")
     headless = LaunchConfiguration("headless")
 
-    # T1: sim + RTAB-Map SLAM (fresh map). Same include the user ran by hand as terminal 1.
-    # grid_topic defaults to /map (mapping/exploration). localization/continue_map are passed through
-    # so this one launcher also covers "resume a saved DB" (continue_map:=true).
+    # Sim + RTAB-Map SLAM (fresh map by default). grid_topic defaults to /map
+    # (mapping/exploration). localization/continue_map are passed through so this launcher
+    # also covers resuming a saved DB (continue_map:=true).
     slam = IncludeLaunchDescription(
         PythonLaunchDescriptionSource(os.path.join(pkg, "launch", "rtabmap_slam.launch.py")),
         launch_arguments={
@@ -56,8 +57,8 @@ def generate_launch_description():
         }.items(),
     )
 
-    # T2: Nav2 with the RTAB-Map facility-sized costmap tuning. Same include the user ran by hand as
-    # terminal 2 -- only difference is it is gated behind a timer so map->odom exists first.
+    # Nav2 with the RTAB-Map facility-sized costmap tuning. Gated behind a timer so that
+    # map->odom exists before the global costmap initializes.
     nav2 = IncludeLaunchDescription(
         PythonLaunchDescriptionSource(os.path.join(pkg, "launch", "nav2.launch.py")),
         launch_arguments={
@@ -66,24 +67,29 @@ def generate_launch_description():
         }.items(),
     )
 
-    return LaunchDescription([
-        DeclareLaunchArgument("headless", default_value="true"),
-        DeclareLaunchArgument("world", default_value="lab.sdf"),
-        DeclareLaunchArgument("localization", default_value="false"),
-        DeclareLaunchArgument("continue_map", default_value="false"),
-        DeclareLaunchArgument("grid_topic", default_value="/map"),
-        DeclareLaunchArgument("spawn_x", default_value="0.0"),
-        DeclareLaunchArgument("spawn_y", default_value="0.0"),
-        DeclareLaunchArgument("spawn_yaw", default_value="0.0"),
-        # inspection_arena toggles (default on). For clean MAPPING disable both: actor:=false fire:=false
-        DeclareLaunchArgument("actor", default_value="true"),
-        DeclareLaunchArgument("fire", default_value="true"),
-        DeclareLaunchArgument("with_nav2", default_value="true"),
-        # RTAB-Map starts at t=14 and publishes map->odom within ~2s on a fresh DB; 24s leaves margin
-        # for a loaded laptop running the gz GUI. Bump this if Nav2 still logs "frame 'map' does not
-        # exist" (it retries, so a late start self-heals; this just avoids the noise).
-        DeclareLaunchArgument("nav2_delay", default_value="24.0"),
-        slam,
-        TimerAction(period=LaunchConfiguration("nav2_delay"),
-                    actions=[nav2], condition=IfCondition(LaunchConfiguration("with_nav2"))),
-    ])
+    return LaunchDescription(
+        [
+            DeclareLaunchArgument("headless", default_value="true"),
+            DeclareLaunchArgument("world", default_value="lab.sdf"),
+            DeclareLaunchArgument("localization", default_value="false"),
+            DeclareLaunchArgument("continue_map", default_value="false"),
+            DeclareLaunchArgument("grid_topic", default_value="/map"),
+            DeclareLaunchArgument("spawn_x", default_value="0.0"),
+            DeclareLaunchArgument("spawn_y", default_value="0.0"),
+            DeclareLaunchArgument("spawn_yaw", default_value="0.0"),
+            # inspection_arena toggles (default on). For clean MAPPING disable both: actor:=false fire:=false
+            DeclareLaunchArgument("actor", default_value="true"),
+            DeclareLaunchArgument("fire", default_value="true"),
+            DeclareLaunchArgument("with_nav2", default_value="true"),
+            # RTAB-Map starts at t=14 and publishes map->odom within ~2s on a fresh DB; 24s leaves margin
+            # for a loaded laptop running the gz GUI. Increase if Nav2 still logs "frame 'map' does not
+            # exist" (Nav2 retries, so a late start self-heals; the delay just avoids the noise).
+            DeclareLaunchArgument("nav2_delay", default_value="24.0"),
+            slam,
+            TimerAction(
+                period=LaunchConfiguration("nav2_delay"),
+                actions=[nav2],
+                condition=IfCondition(LaunchConfiguration("with_nav2")),
+            ),
+        ]
+    )

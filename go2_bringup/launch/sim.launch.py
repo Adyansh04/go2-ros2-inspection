@@ -15,6 +15,7 @@ For mapping/exploration or localization+Nav2, prefer the higher-level launchers:
   ros2 launch go2_bringup sim_mapping.launch.py      # fresh mapping (sim + RTAB-Map + Nav2)
   ros2 launch go2_bringup inspection_nav.launch.py   # localization + Nav2 on a saved map
 """
+
 import os
 from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
@@ -25,29 +26,39 @@ from launch.substitutions import LaunchConfiguration
 
 def generate_launch_description():
     champ_launch = os.path.join(
-        get_package_share_directory("go2_bringup"), "launch", "go2_champ.launch.py")
+        get_package_share_directory("go2_bringup"), "launch", "go2_champ.launch.py"
+    )
 
-    return LaunchDescription([
-        DeclareLaunchArgument("world", default_value="lab.sdf"),
-        DeclareLaunchArgument("headless", default_value="false"),
-        DeclareLaunchArgument("champ", default_value="true",
-                              description="Run the CHAMP gait so the dog stands and walks from /cmd_vel."),
-        DeclareLaunchArgument("spawn_x", default_value="0.0"),
-        DeclareLaunchArgument("spawn_y", default_value="0.0"),
-        DeclareLaunchArgument("spawn_yaw", default_value="0.0"),
-        DeclareLaunchArgument("actor", default_value="true"),   # inspection_arena: walking human (false=disable)
-        DeclareLaunchArgument("fire", default_value="true"),    # inspection_arena: fire+smoke (false=keep drum only)
-        IncludeLaunchDescription(
-            PythonLaunchDescriptionSource(champ_launch),
-            launch_arguments={
-                "world": LaunchConfiguration("world"),
-                "headless": LaunchConfiguration("headless"),
-                "champ": LaunchConfiguration("champ"),
-                "spawn_x": LaunchConfiguration("spawn_x"),
-                "spawn_y": LaunchConfiguration("spawn_y"),
-                "spawn_yaw": LaunchConfiguration("spawn_yaw"),
-                "actor": LaunchConfiguration("actor"),
-                "fire": LaunchConfiguration("fire"),
-            }.items(),
-        ),
-    ])
+    return LaunchDescription(
+        [
+            DeclareLaunchArgument("world", default_value="lab.sdf"),
+            DeclareLaunchArgument("headless", default_value="false"),
+            DeclareLaunchArgument(
+                "champ",
+                default_value="true",
+                description="Run the CHAMP gait so the dog stands and walks from /cmd_vel.",
+            ),
+            DeclareLaunchArgument("spawn_x", default_value="0.0"),
+            DeclareLaunchArgument("spawn_y", default_value="0.0"),
+            DeclareLaunchArgument("spawn_yaw", default_value="0.0"),
+            DeclareLaunchArgument(
+                "actor", default_value="true"
+            ),  # inspection_arena: walking human (false=disable)
+            DeclareLaunchArgument(
+                "fire", default_value="true"
+            ),  # inspection_arena: fire+smoke (false=keep drum only)
+            IncludeLaunchDescription(
+                PythonLaunchDescriptionSource(champ_launch),
+                launch_arguments={
+                    "world": LaunchConfiguration("world"),
+                    "headless": LaunchConfiguration("headless"),
+                    "champ": LaunchConfiguration("champ"),
+                    "spawn_x": LaunchConfiguration("spawn_x"),
+                    "spawn_y": LaunchConfiguration("spawn_y"),
+                    "spawn_yaw": LaunchConfiguration("spawn_yaw"),
+                    "actor": LaunchConfiguration("actor"),
+                    "fire": LaunchConfiguration("fire"),
+                }.items(),
+            ),
+        ]
+    )

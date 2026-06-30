@@ -3,7 +3,8 @@
   <name>go2_exploration</name>
   <version>0.1.0</version>
   <description>Frontier-based autonomous exploration (Nav2 NavigateToPose)</description>
-  <maintainer email="manasreddyarumalla@gmail.com">team</maintainer>
+  <maintainer email="gupta.adyansh@gmail.com">Adyansh Gupta</maintainer>
+  <author email="gupta.adyansh@gmail.com">Adyansh Gupta</author>
   <license>MIT</license>
   <buildtool_depend>ament_cmake</buildtool_depend>
   <depend>rclcpp</depend>

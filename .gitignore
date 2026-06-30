@@ -1,0 +1,22 @@
+# Python
+__pycache__/**
+*.py[cod]
+*.egg-info/
+.eggs/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+
+# colcon / ament build artifacts (if ever generated inside the source tree)
+build/
+install/
+log/
+
+# Editor / IDE / OS
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store

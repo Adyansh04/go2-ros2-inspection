@@ -34,48 +34,59 @@ using NavigateToPose = nav2_msgs::action::NavigateToPose;
 using GoalHandle = rclcpp_action::ClientGoalHandle<NavigateToPose>;
 using namespace std::chrono_literals;
 
-struct Frontier { double wx, wy; int size; double dist; double score; };
+struct Frontier {
+  double wx, wy;
+  int size;
+  double dist;
+  double score;
+};
 
 class FrontierExplorer : public rclcpp::Node {
-public:
+ public:
   FrontierExplorer() : Node("frontier_explorer") {
     min_frontier_size_ = declare_parameter("min_frontier_size", 8);
-    min_goal_distance_ = declare_parameter("min_goal_distance", 0.8);  // > Nav2 goal tolerance so each goal demands real travel
-    free_thresh_       = declare_parameter("free_threshold", 25);
-    blacklist_radius_  = declare_parameter("blacklist_radius", 0.5);
+    min_goal_distance_ = declare_parameter(
+        "min_goal_distance", 0.8);  // > Nav2 goal tolerance so each goal demands real travel
+    free_thresh_ = declare_parameter("free_threshold", 25);
+    blacklist_radius_ = declare_parameter("blacklist_radius", 0.5);
     // A goal must be >= goal_clearance from any WALL, else the waypoint lands in/against a wall (inside the
     // costmap inflation) and Nav2 can't fit the footprint there -> goal rejected/blacklisted, time wasted.
     // Unknown(-1) cells DON'T count (a frontier is next to unknown by definition) -- only occupied(>=thresh).
     // MUST be ~ the global-costmap inflation_radius (0.7) AND > the footprint reach (0.35m half-length): then
     // frontiers are only picked in genuinely FREE space and near-wall ones are OMITTED (the explorer just
-    // looks for a freer point / cluster). 0.30 was too small -> goals fell in the inflation -> unreachable.
-    goal_clearance_    = declare_parameter("goal_clearance", 0.6);      // ~ inflation_radius -> reachable goals
-    occupied_thresh_   = declare_parameter("occupied_threshold", 65);
-    goal_timeout_s_    = declare_parameter("goal_timeout", 60.0);
-    planning_period_   = declare_parameter("planning_period", 2.0);
+    // looks for a freer point / cluster). If too small, goals fall in the inflation and become unreachable.
+    goal_clearance_ =
+        declare_parameter("goal_clearance", 0.6);  // ~ inflation_radius -> reachable goals
+    occupied_thresh_ = declare_parameter("occupied_threshold", 65);
+    goal_timeout_s_ = declare_parameter("goal_timeout", 60.0);
+    planning_period_ = declare_parameter("planning_period", 2.0);
     // Reactive goal handling (anti-circling / anti-stuck). Exploration needs no pinpoint reaching --
     // once near a frontier the LiDAR already sees the unknown beyond it, so we advance.
-    arrival_radius_    = declare_parameter("arrival_radius", 0.55);   // "close enough" to a frontier
-    arrival_patience_  = declare_parameter("arrival_patience", 3.0);  // s lingering near goal => advance
-    progress_dist_     = declare_parameter("progress_dist", 0.25);    // m of motion counted as progress
+    arrival_radius_ = declare_parameter("arrival_radius", 0.55);  // "close enough" to a frontier
+    arrival_patience_ =
+        declare_parameter("arrival_patience", 3.0);             // s lingering near goal => advance
+    progress_dist_ = declare_parameter("progress_dist", 0.25);  // m of motion counted as progress
     // s without progress => give up on this goal (blacklist + replan). Long enough that Nav2's own
     // recovery (clear costmap / spin / collision-aware BackUp) gets to run first.
-    progress_timeout_  = declare_parameter("progress_timeout", 18.0);
+    progress_timeout_ = declare_parameter("progress_timeout", 18.0);
     // INFO-GAIN selection (explore_lite style): prefer LARGE frontiers (more unknown revealed),
     // penalised by distance, over pure nearest -> purposeful "where to go", less dithering.
-    gain_scale_        = declare_parameter("gain_scale", 1.0);
-    potential_scale_   = declare_parameter("potential_scale", 3.0);
+    gain_scale_ = declare_parameter("gain_scale", 1.0);
+    potential_scale_ = declare_parameter("potential_scale", 3.0);
     // OPEN-SPACE preference: bias goals toward points with lots of FREE room around them (not wall-hugging),
     // so exploration maps more reliably. openness = free/(free+occupied) within openness_radius, ignoring
     // unknown (a frontier is next to unknown by definition; counting it would penalise every frontier).
     // Wall-adjacent goal -> high occupied -> low openness; open-room goal -> ~1.0. All-zero defaults make
     // this a NO-OP (identical to the prior nearest/info-gain behaviour) until enabled via params.
-    openness_radius_   = declare_parameter("openness_radius", 0.6);    // m, ~ inflation_radius window
-    openness_scale_    = declare_parameter("openness_scale", 0.0);     // 0 = off; enable with ~0.5
-    min_openness_      = declare_parameter("min_openness", 0.0);       // reject goals below this openness (0 = accept all)
-    openness_band_     = declare_parameter("openness_band", 0.0);      // m; >0 = within best_d+band pick the MOST OPEN cell
+    openness_radius_ = declare_parameter("openness_radius", 0.6);  // m, ~ inflation_radius window
+    openness_scale_ =
+        declare_parameter("openness_scale", 0.0);  // 0 = off; >0 weights the openness term
+    min_openness_ = declare_parameter("min_openness",
+                                      0.0);  // reject goals below this openness (0 = accept all)
+    openness_band_ = declare_parameter("openness_band",
+                                       0.0);  // m; >0 = within best_d+band pick the MOST OPEN cell
     // Blacklisted frontiers EXPIRE after this -> retried once the map fills in (no permanent give-up).
-    blacklist_ttl_     = declare_parameter("blacklist_ttl", 30.0);
+    blacklist_ttl_ = declare_parameter("blacklist_ttl", 30.0);
     // SHORT-GOAL STEPPING: cap how far a single goal can be -- send a nearer intermediate toward the chosen
     // frontier, then re-evaluate. Short reachable goals => Nav2 rarely times out/wedges => far regions
     // aren't blacklisted+abandoned (the premature-COMPLETE cause); the robot STEPS toward distant frontiers.
@@ -83,43 +94,50 @@ public:
     // Don't quit the instant frontiers are empty: if frontier CELLS remain but were all blacklisted, clear
     // the blacklist and retry (bounded by max_clear_retries between successes), and require done_confirm
     // consecutive truly-empty cycles -> no premature stop while reachable area still exists.
-    done_confirm_      = declare_parameter("done_confirm", 3);
+    done_confirm_ = declare_parameter("done_confirm", 3);
     max_clear_retries_ = declare_parameter("max_clear_retries", 3);
-    bool autostart     = declare_parameter("autostart", true);
-    robot_frame_       = declare_parameter("robot_base_frame", std::string("base_link"));
+    bool autostart = declare_parameter("autostart", true);
+    robot_frame_ = declare_parameter("robot_base_frame", std::string("base_link"));
 
     tf_buffer_ = std::make_shared<tf2_ros::Buffer>(get_clock());
     tf_listener_ = std::make_shared<tf2_ros::TransformListener>(*tf_buffer_);
 
-    rclcpp::QoS map_qos(1); map_qos.transient_local().reliable();
+    rclcpp::QoS map_qos(1);
+    map_qos.transient_local().reliable();
     map_sub_ = create_subscription<nav_msgs::msg::OccupancyGrid>(
-      "/map", map_qos, [this](nav_msgs::msg::OccupancyGrid::SharedPtr m){ map_ = m; });
+        "/map", map_qos, [this](nav_msgs::msg::OccupancyGrid::SharedPtr m) { map_ = m; });
 
     markers_pub_ = create_publisher<visualization_msgs::msg::MarkerArray>("/explore/frontiers", 1);
     nav_client_ = rclcpp_action::create_client<NavigateToPose>(this, "navigate_to_pose");
 
-    start_srv_ = create_service<std_srvs::srv::Empty>("/explore/start",
-      [this](const std::shared_ptr<std_srvs::srv::Empty::Request>,
-             std::shared_ptr<std_srvs::srv::Empty::Response>){ state_ = EXPLORING;
-             RCLCPP_INFO(get_logger(), "exploration started"); });
-    stop_srv_ = create_service<std_srvs::srv::Empty>("/explore/stop",
-      [this](const std::shared_ptr<std_srvs::srv::Empty::Request>,
-             std::shared_ptr<std_srvs::srv::Empty::Response>){ state_ = IDLE; cancelGoal();
-             RCLCPP_INFO(get_logger(), "exploration stopped"); });
+    start_srv_ = create_service<std_srvs::srv::Empty>(
+        "/explore/start", [this](const std::shared_ptr<std_srvs::srv::Empty::Request>,
+                                 std::shared_ptr<std_srvs::srv::Empty::Response>) {
+          state_ = EXPLORING;
+          RCLCPP_INFO(get_logger(), "exploration started");
+        });
+    stop_srv_ = create_service<std_srvs::srv::Empty>(
+        "/explore/stop", [this](const std::shared_ptr<std_srvs::srv::Empty::Request>,
+                                std::shared_ptr<std_srvs::srv::Empty::Response>) {
+          state_ = IDLE;
+          cancelGoal();
+          RCLCPP_INFO(get_logger(), "exploration stopped");
+        });
 
-    timer_ = create_wall_timer(
-      std::chrono::duration<double>(planning_period_), [this]{ tick(); });
+    timer_ = create_wall_timer(std::chrono::duration<double>(planning_period_), [this] { tick(); });
     state_ = autostart ? EXPLORING : IDLE;
     RCLCPP_INFO(get_logger(), "frontier_explorer ready (autostart=%d)", autostart);
   }
 
-private:
+ private:
   enum State { IDLE, EXPLORING, NAVIGATING, DONE };
 
   bool robotPose(double &x, double &y) {
     try {
       auto t = tf_buffer_->lookupTransform("map", robot_frame_, tf2::TimePointZero);
-      x = t.transform.translation.x; y = t.transform.translation.y; return true;
+      x = t.transform.translation.x;
+      y = t.transform.translation.y;
+      return true;
     } catch (const std::exception &e) {
       RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 5000, "no map->%s TF yet: %s",
                            robot_frame_.c_str(), e.what());
@@ -132,7 +150,9 @@ private:
   bool mapHasFreeSpace(int min_cells) {
     if (!map_) return false;
     int n = 0;
-    for (auto v : map_->data) if (v >= 0 && v <= free_thresh_) if (++n >= min_cells) return true;
+    for (auto v : map_->data)
+      if (v >= 0 && v <= free_thresh_)
+        if (++n >= min_cells) return true;
     return false;
   }
 
@@ -140,56 +160,76 @@ private:
     // keep the blacklist bounded to its TTL window (clampGoal + frontier selection scan it every tick).
     if (!blacklist_.empty()) {
       auto nowt = now();
-      blacklist_.erase(std::remove_if(blacklist_.begin(), blacklist_.end(),
-        [&](const BL &b){ return (nowt - b.t).seconds() >= blacklist_ttl_; }), blacklist_.end());
+      blacklist_.erase(
+          std::remove_if(blacklist_.begin(), blacklist_.end(),
+                         [&](const BL &b) { return (nowt - b.t).seconds() >= blacklist_ttl_; }),
+          blacklist_.end());
     }
-    if (state_ == NAVIGATING) { watchdog(); return; }   // timeout/recovery checks while driving
+    if (state_ == NAVIGATING) {
+      watchdog();
+      return;
+    }  // timeout/recovery checks while driving
     if (state_ != EXPLORING) return;
-    if (!map_) { RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 5000, "waiting for /map"); return; }
-    double rx, ry; if (!robotPose(rx, ry)) return;
+    if (!map_) {
+      RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 5000, "waiting for /map");
+      return;
+    }
+    double rx, ry;
+    if (!robotPose(rx, ry)) return;
 
     auto frontiers = findFrontiers(rx, ry);
     publishMarkers(frontiers);
     // Genuine progress = the map GREW (new free cells). Refresh the clear-retry budget only then -- NOT on
     // mere goal-arrival, which fires precisely when the robot is circling a frontier it can't consume
     // (resetting there would defeat max_clear_retries and livelock the FSM short of DONE).
-    if (cur_free_cells_ > free_high_water_) { free_high_water_ = cur_free_cells_; clears_done_ = 0; }
+    if (cur_free_cells_ > free_high_water_) {
+      free_high_water_ = cur_free_cells_;
+      clears_done_ = 0;
+    }
     if (frontiers.empty()) {
       if (!mapHasFreeSpace(50)) {
-        RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 5000, "map not populated yet -- waiting for SLAM");
+        RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 5000,
+                             "map not populated yet -- waiting for SLAM");
         return;
       }
       // Frontier CELLS still exist but none were navigable this cycle (all blacklisted / too-far-failed):
       // clear the (TTL) blacklist and retry before giving up, so reachable-but-previously-failed regions
       // aren't abandoned. Bounded by max_clear_retries between successes (reset on a reached frontier).
       if (last_frontier_cells_ > 0 && !blacklist_.empty() && clears_done_ < max_clear_retries_) {
-        RCLCPP_INFO(get_logger(), "no navigable frontier (%d cells, all blacklisted/filtered) -- clearing "
-                    "blacklist + retrying (%d/%d)", last_frontier_cells_, clears_done_ + 1, max_clear_retries_);
-        blacklist_.clear(); ++clears_done_; empty_cycles_ = 0; return;
+        RCLCPP_INFO(get_logger(),
+                    "no navigable frontier (%d cells, all blacklisted/filtered) -- clearing "
+                    "blacklist + retrying (%d/%d)",
+                    last_frontier_cells_, clears_done_ + 1, max_clear_retries_);
+        blacklist_.clear();
+        ++clears_done_;
+        empty_cycles_ = 0;
+        return;
       }
-      if (++empty_cycles_ < done_confirm_) return;     // require a few consecutive empty cycles
+      if (++empty_cycles_ < done_confirm_) return;  // require a few consecutive empty cycles
       RCLCPP_INFO(get_logger(), "no reachable frontiers left -- exploration COMPLETE");
-      state_ = DONE; return;
+      state_ = DONE;
+      return;
     }
     empty_cycles_ = 0;
     // INFO-GAIN: highest score first (large frontier, near) rather than pure nearest.
     std::sort(frontiers.begin(), frontiers.end(),
-              [](const Frontier &a, const Frontier &b){ return a.score > b.score; });
+              [](const Frontier &a, const Frontier &b) { return a.score > b.score; });
     double gx = frontiers.front().wx, gy = frontiers.front().wy;
-    clampGoal(gx, gy, rx, ry);                          // step toward far frontiers instead of one long goal
+    clampGoal(gx, gy, rx, ry);  // step toward far frontiers instead of one long goal
     sendGoal(gx, gy, rx, ry);
   }
 
   std::vector<Frontier> findFrontiers(double rx, double ry) {
     const auto &g = *map_;
     const int W = g.info.width, H = g.info.height;
-    const double res = g.info.resolution, ox = g.info.origin.position.x, oy = g.info.origin.position.y;
-    auto idx = [&](int cx, int cy){ return cy * W + cx; };
-    auto isFree = [&](int v){ return v >= 0 && v <= free_thresh_; };
+    const double res = g.info.resolution, ox = g.info.origin.position.x,
+                 oy = g.info.origin.position.y;
+    auto idx = [&](int cx, int cy) { return cy * W + cx; };
+    auto isFree = [&](int v) { return v >= 0 && v <= free_thresh_; };
     // A candidate goal cell is only valid if NO occupied (wall) cell lies within clr cells of it,
     // so Nav2 can fit the robot footprint there (fixes "waypoint inside the wall").
     const int clr = std::max(1, (int)std::lround(goal_clearance_ / res));
-    auto hasClearance = [&](int cx, int cy){
+    auto hasClearance = [&](int cx, int cy) {
       for (int dy = -clr; dy <= clr; ++dy)
         for (int dx = -clr; dx <= clr; ++dx) {
           int nx = cx + dx, ny = cy + dy;
@@ -209,8 +249,10 @@ private:
           int nx = cx + dx, ny = cy + dy;
           if (nx < 0 || ny < 0 || nx >= W || ny >= H) continue;
           int v = g.data[idx(nx, ny)];
-          if (v >= 0 && v <= free_thresh_) ++nFreeO;
-          else if (v >= occupied_thresh_) ++nOccO;          // unknown(-1) + mid-band ignored
+          if (v >= 0 && v <= free_thresh_)
+            ++nFreeO;
+          else if (v >= occupied_thresh_)
+            ++nOccO;  // unknown(-1) + mid-band ignored
         }
       int known = nFreeO + nOccO;
       return known == 0 ? 1.0 : (double)nFreeO / (double)known;
@@ -223,7 +265,10 @@ private:
         bool nearUnknown = false;
         for (int dy = -1; dy <= 1 && !nearUnknown; ++dy)
           for (int dx = -1; dx <= 1; ++dx)
-            if (g.data[idx(cx + dx, cy + dy)] == -1) { nearUnknown = true; break; }
+            if (g.data[idx(cx + dx, cy + dy)] == -1) {
+              nearUnknown = true;
+              break;
+            }
         if (nearUnknown) isFrontier[idx(cx, cy)] = 1;
       }
 
@@ -236,18 +281,31 @@ private:
         // BFS cluster. Target the cluster cell NEAREST the robot (>= min_goal_distance, with
         // wall-clearance), not the centroid: a frontier ring around the robot would have its
         // centroid back on the robot, which min_goal_distance then rejects.
-        std::deque<int> q{i}; visited[i] = 1;
-        int n = 0; double best_d = 1e18, best_wx = 0, best_wy = 0;
+        std::deque<int> q{i};
+        visited[i] = 1;
+        int n = 0;
+        double best_d = 1e18, best_wx = 0, best_wy = 0;
         int best_cx = -1, best_cy = -1;
-        struct Cand { double wx, wy, d; int cx, cy; };
-        std::vector<Cand> cands;             // only populated when openness_band_ > 0
+        struct Cand {
+          double wx, wy, d;
+          int cx, cy;
+        };
+        std::vector<Cand> cands;  // only populated when openness_band_ > 0
         while (!q.empty()) {
-          int c = q.front(); q.pop_front();
-          int ccx = c % W, ccy = c / W; ++n;
+          int c = q.front();
+          q.pop_front();
+          int ccx = c % W, ccy = c / W;
+          ++n;
           double cwx = ox + (ccx + 0.5) * res, cwy = oy + (ccy + 0.5) * res;
           double cd = std::hypot(cwx - rx, cwy - ry);
           if (cd >= min_goal_distance_ && hasClearance(ccx, ccy)) {
-            if (cd < best_d) { best_d = cd; best_wx = cwx; best_wy = cwy; best_cx = ccx; best_cy = ccy; }
+            if (cd < best_d) {
+              best_d = cd;
+              best_wx = cwx;
+              best_wy = cwy;
+              best_cx = ccx;
+              best_cy = ccy;
+            }
             if (openness_band_ > 0.0) cands.push_back({cwx, cwy, cd, ccx, ccy});
           }
           for (int dy = -1; dy <= 1; ++dy)
@@ -255,28 +313,40 @@ private:
               int nx = ccx + dx, ny = ccy + dy;
               if (nx < 0 || ny < 0 || nx >= W || ny >= H) continue;
               int ni = idx(nx, ny);
-              if (isFrontier[ni] && !visited[ni]) { visited[ni] = 1; q.push_back(ni); }
+              if (isFrontier[ni] && !visited[ni]) {
+                visited[ni] = 1;
+                q.push_back(ni);
+              }
             }
         }
         if (n < min_frontier_size_) continue;
-        if (best_d > 1e17) continue;               // no cell in this cluster far enough to be a goal
+        if (best_d > 1e17) continue;  // no cell in this cluster far enough to be a goal
         // Default goal = the nearest clearance-passing cell (prior behaviour). OPEN-SPACE selection: when
         // openness_band_ > 0, among candidates within best_d+band pick the MOST OPEN one -> the waypoint
         // moves off the wall into the roomy part of the cluster.
-        double gx = best_wx, gy = best_wy; int gcx = best_cx, gcy = best_cy;
+        double gx = best_wx, gy = best_wy;
+        int gcx = best_cx, gcy = best_cy;
         if (openness_band_ > 0.0 && !cands.empty()) {
           double bestO = -1.0;
           for (const auto &cc : cands) {
-            if (cc.d > best_d + openness_band_) continue;   // stay within the distance band of the nearest
+            if (cc.d > best_d + openness_band_)
+              continue;  // stay within the distance band of the nearest
             double o = openness(cc.cx, cc.cy);
-            if (o > bestO) { bestO = o; gx = cc.wx; gy = cc.wy; gcx = cc.cx; gcy = cc.cy; }
+            if (o > bestO) {
+              bestO = o;
+              gx = cc.wx;
+              gy = cc.wy;
+              gcx = cc.cx;
+              gcy = cc.cy;
+            }
           }
         }
         double op = (gcx >= 0) ? openness(gcx, gcy) : 1.0;
-        if (op < min_openness_) continue;          // too confined -> skip this cluster's goal
+        if (op < min_openness_) continue;  // too confined -> skip this cluster's goal
         if (blacklisted(gx, gy)) continue;
         // info-gain: bigger + closer = better; openness term (no-op when openness_scale_=0) prefers open goals.
-        double score = gain_scale_ * n - potential_scale_ * best_d + openness_scale_ * op * gain_scale_ * n;
+        double score =
+            gain_scale_ * n - potential_scale_ * best_d + openness_scale_ * op * gain_scale_ * n;
         out.push_back({gx, gy, n, best_d, score});
       }
     int nFree = 0, nUnk = 0, nFC = 0;
@@ -285,7 +355,8 @@ private:
       if (g.data[k] == -1) nUnk++;
       if (isFrontier[k]) nFC++;
     }
-    last_frontier_cells_ = nFC; cur_free_cells_ = nFree;
+    last_frontier_cells_ = nFC;
+    cur_free_cells_ = nFree;
     RCLCPP_INFO(get_logger(), "findFrontiers: free=%d unknown=%d frontierCells=%d clusters=%zu",
                 nFree, nUnk, nFC, out.size());
     return out;
@@ -297,7 +368,8 @@ private:
     if (!map_) return false;
     const auto &g = *map_;
     const int W = g.info.width, H = g.info.height;
-    const double res = g.info.resolution, ox = g.info.origin.position.x, oy = g.info.origin.position.y;
+    const double res = g.info.resolution, ox = g.info.origin.position.x,
+                 oy = g.info.origin.position.y;
     int cx = (int)std::floor((wx - ox) / res), cy = (int)std::floor((wy - oy) / res);
     if (cx < 0 || cy < 0 || cx >= W || cy >= H) return false;
     int v = g.data[cy * W + cx];
@@ -320,11 +392,16 @@ private:
     double d = std::hypot(wx - rx, wy - ry);
     if (d <= max_goal_distance_ || !map_) return;
     const double res = map_->info.resolution;
-    if (res <= 0.0 || max_goal_distance_ < min_goal_distance_) return;   // degenerate-config guard (no inf loop)
+    if (res <= 0.0 || max_goal_distance_ < min_goal_distance_)
+      return;  // degenerate-config guard (no inf loop)
     const double ux = (wx - rx) / d, uy = (wy - ry) / d;
     for (double s = max_goal_distance_; s >= min_goal_distance_; s -= res) {
       double tx = rx + ux * s, ty = ry + uy * s;
-      if (cellNavigable(tx, ty) && !blacklisted(tx, ty)) { wx = tx; wy = ty; return; }
+      if (cellNavigable(tx, ty) && !blacklisted(tx, ty)) {
+        wx = tx;
+        wy = ty;
+        return;
+      }
     }
   }
 
@@ -336,19 +413,31 @@ private:
     NavigateToPose::Goal goal;
     goal.pose.header.frame_id = "map";
     goal.pose.header.stamp = now();
-    goal.pose.pose.position.x = wx; goal.pose.pose.position.y = wy;
+    goal.pose.pose.position.x = wx;
+    goal.pose.pose.position.y = wy;
     double yaw = std::atan2(wy - ry, wx - rx);
     goal.pose.pose.orientation.z = std::sin(yaw / 2.0);
     goal.pose.pose.orientation.w = std::cos(yaw / 2.0);
 
-    cur_goal_x_ = wx; cur_goal_y_ = wy; goal_sent_time_ = now(); state_ = NAVIGATING;
-    near_goal_ = false; last_x_ = rx; last_y_ = ry; last_progress_time_ = now();  // reset reactive trackers
-    RCLCPP_INFO(get_logger(), "-> frontier (%.2f, %.2f)  dist=%.2f", wx, wy, std::hypot(wx - rx, wy - ry));
+    cur_goal_x_ = wx;
+    cur_goal_y_ = wy;
+    goal_sent_time_ = now();
+    state_ = NAVIGATING;
+    near_goal_ = false;
+    last_x_ = rx;
+    last_y_ = ry;
+    last_progress_time_ = now();  // reset reactive trackers
+    RCLCPP_INFO(get_logger(), "-> frontier (%.2f, %.2f)  dist=%.2f", wx, wy,
+                std::hypot(wx - rx, wy - ry));
 
     rclcpp_action::Client<NavigateToPose>::SendGoalOptions opt;
     opt.goal_response_callback = [this](GoalHandle::SharedPtr h) {
-      if (!h) { RCLCPP_WARN(get_logger(), "goal rejected"); blacklist(cur_goal_x_, cur_goal_y_); state_ = EXPLORING; }
-      else goal_handle_ = h;
+      if (!h) {
+        RCLCPP_WARN(get_logger(), "goal rejected");
+        blacklist(cur_goal_x_, cur_goal_y_);
+        state_ = EXPLORING;
+      } else
+        goal_handle_ = h;
     };
     opt.result_callback = [this](const GoalHandle::WrappedResult &r) {
       // Blacklist EVERY attempted goal -- on failure (don't retry the unreachable; Nav2 has already
@@ -363,29 +452,44 @@ private:
     nav_client_->async_send_goal(goal, opt);
   }
 
-  void cancelGoal() { if (goal_handle_) { nav_client_->async_cancel_goal(goal_handle_); goal_handle_.reset(); } }
+  void cancelGoal() {
+    if (goal_handle_) {
+      nav_client_->async_cancel_goal(goal_handle_);
+      goal_handle_.reset();
+    }
+  }
 
   // Blacklist with a TTL: an entry blocks frontiers within blacklist_radius_ for blacklist_ttl_ s,
   // then expires (so a transient failure doesn't permanently abandon a region).
   void blacklist(double x, double y) { blacklist_.push_back({x, y, now()}); }
   bool blacklisted(double x, double y) {
     for (auto &b : blacklist_)
-      if ((now() - b.t).seconds() < blacklist_ttl_ && std::hypot(x - b.x, y - b.y) < blacklist_radius_) return true;
+      if ((now() - b.t).seconds() < blacklist_ttl_ &&
+          std::hypot(x - b.x, y - b.y) < blacklist_radius_)
+        return true;
     return false;
   }
 
   void publishMarkers(const std::vector<Frontier> &fs) {
     visualization_msgs::msg::MarkerArray arr;
-    visualization_msgs::msg::Marker del; del.action = visualization_msgs::msg::Marker::DELETEALL;
+    visualization_msgs::msg::Marker del;
+    del.action = visualization_msgs::msg::Marker::DELETEALL;
     arr.markers.push_back(del);
     int id = 0;
     for (auto &f : fs) {
       visualization_msgs::msg::Marker m;
-      m.header.frame_id = "map"; m.header.stamp = now(); m.ns = "frontiers"; m.id = id++;
-      m.type = visualization_msgs::msg::Marker::SPHERE; m.action = visualization_msgs::msg::Marker::ADD;
-      m.pose.position.x = f.wx; m.pose.position.y = f.wy; m.pose.orientation.w = 1.0;
-      m.scale.x = m.scale.y = m.scale.z = 0.12;   // small dots
-      m.color.g = 1.0; m.color.a = 0.8;
+      m.header.frame_id = "map";
+      m.header.stamp = now();
+      m.ns = "frontiers";
+      m.id = id++;
+      m.type = visualization_msgs::msg::Marker::SPHERE;
+      m.action = visualization_msgs::msg::Marker::ADD;
+      m.pose.position.x = f.wx;
+      m.pose.position.y = f.wy;
+      m.pose.orientation.w = 1.0;
+      m.scale.x = m.scale.y = m.scale.z = 0.12;  // small dots
+      m.color.g = 1.0;
+      m.color.a = 0.8;
       arr.markers.push_back(m);
     }
     markers_pub_->publish(arr);
@@ -394,7 +498,10 @@ private:
   void advance(const char *why) {
     RCLCPP_INFO(get_logger(), "%s -- blacklisting (%.2f,%.2f) + replanning to a different frontier",
                 why, cur_goal_x_, cur_goal_y_);
-    cancelGoal(); blacklist(cur_goal_x_, cur_goal_y_); near_goal_ = false; state_ = EXPLORING;
+    cancelGoal();
+    blacklist(cur_goal_x_, cur_goal_y_);
+    near_goal_ = false;
+    state_ = EXPLORING;
   }
 
   // Reactive watchdog (each tick while NAVIGATING) -- anti-circling / anti-stuck core.
@@ -406,15 +513,28 @@ private:
       // without Nav2 completing == circling. Advance once close for arrival_patience.
       double d = std::hypot(cur_goal_x_ - rx, cur_goal_y_ - ry);
       if (d < arrival_radius_) {
-        if (!near_goal_) { near_goal_ = true; near_since_ = now(); }
-        else if ((now() - near_since_).seconds() > arrival_patience_) { advance("reached frontier (near, advancing)"); return; }
-      } else near_goal_ = false;
+        if (!near_goal_) {
+          near_goal_ = true;
+          near_since_ = now();
+        } else if ((now() - near_since_).seconds() > arrival_patience_) {
+          advance("reached frontier (near, advancing)");
+          return;
+        }
+      } else
+        near_goal_ = false;
       // PROGRESS: wedged for progress_timeout (Nav2's own collision-aware recovery has had its
       // chance) -> give up on this goal and try a different frontier. We do NOT drive in reverse.
-      if (std::hypot(rx - last_x_, ry - last_y_) > progress_dist_) { last_x_ = rx; last_y_ = ry; last_progress_time_ = now(); }
-      else if ((now() - last_progress_time_).seconds() > progress_timeout_) { advance("no progress (stuck)"); return; }
+      if (std::hypot(rx - last_x_, ry - last_y_) > progress_dist_) {
+        last_x_ = rx;
+        last_y_ = ry;
+        last_progress_time_ = now();
+      } else if ((now() - last_progress_time_).seconds() > progress_timeout_) {
+        advance("no progress (stuck)");
+        return;
+      }
     }
-    if ((now() - goal_sent_time_).seconds() > goal_timeout_s_) advance("goal timed out");  // hard cap
+    if ((now() - goal_sent_time_).seconds() > goal_timeout_s_)
+      advance("goal timed out");  // hard cap
   }
 
   // params
@@ -427,9 +547,13 @@ private:
   std::string robot_frame_;
   // state
   State state_{IDLE};
-  int last_frontier_cells_{0}, empty_cycles_{0}, clears_done_{0}, cur_free_cells_{0}, free_high_water_{0};
+  int last_frontier_cells_{0}, empty_cycles_{0}, clears_done_{0}, cur_free_cells_{0},
+      free_high_water_{0};
   nav_msgs::msg::OccupancyGrid::SharedPtr map_;
-  struct BL { double x, y; rclcpp::Time t; };
+  struct BL {
+    double x, y;
+    rclcpp::Time t;
+  };
   std::vector<BL> blacklist_;
   double cur_goal_x_{0}, cur_goal_y_{0};
   rclcpp::Time goal_sent_time_;
