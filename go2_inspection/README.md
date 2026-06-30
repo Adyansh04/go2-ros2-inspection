@@ -88,10 +88,10 @@ Services (all `go2_inspection_interfaces/srv/ZoneTask`):
 
 ## MCP server (`mcp_mission_server`)
 
-A FastMCP **stdio** server that bridges the `mission_control_server` services to Claude as natural-language tools. It is **not** a `console_scripts` entry point: run it via `run_mcp_sim.sh` (sources ROS + the sim workspace + DDS env + the venv with `fastmcp`) and register it with Claude:
+A FastMCP **stdio** server that bridges the `mission_control_server` services to Claude as natural-language tools. It is **not** a `console_scripts` entry point: run it via [`run_mcp_sim.sh`](../run_mcp_sim.sh) (sources ROS + the sim workspace + DDS env, then runs the server with the `python3` on PATH, which must have `fastmcp`) and register it with Claude:
 
 ```bash
-claude mcp add go2-sim -- /home/adyansh/go2-inspection/go2-sim/run_mcp_sim.sh
+claude mcp add go2-sim -- /abs/path/to/go2-sim/go2_ws/src/run_mcp_sim.sh
 ```
 
 It lazily starts a single rclpy client node, normalizes NL zone references (`zone 3`/`room 3`/`3` -> `zone_3`; `all`/`everything` -> all zones), and returns a clear "service not available" message if `mission_control` is not up.

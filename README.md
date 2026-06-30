@@ -192,7 +192,7 @@ ros2 launch go2_bringup mission_control.launch.py \
 ### Run — natural language (MCP + Claude)
 With the mission‑control stack running, register the MCP server once, then talk to Claude:
 ```bash
-claude mcp add go2-sim -- /absolute/path/to/go2-sim/run_mcp_sim.sh
+claude mcp add go2-sim -- /absolute/path/to/go2-sim/go2_ws/src/run_mcp_sim.sh
 ```
 Then: *"start exploring"*, *"what zones did you find?"*, *"inspect zone 1"*, *"give me the report."*
 
@@ -214,6 +214,7 @@ go2_ws/src/
 ├── go2_zones/                   # zone_segmenter
 ├── champ*/                      # vendored CHAMP quadruped controller
 ├── media/                       # README demo clips + images
+├── run_mcp_sim.sh               # MCP server launcher for the Claude CLI
 └── .clang-format                # C++ style (Google base, 100-col)
 ```
 

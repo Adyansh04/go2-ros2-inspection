@@ -42,9 +42,11 @@ from go2_inspection_interfaces.srv import ZoneTask
 
 GAUGES_ROOT = os.path.expanduser("~/gauges")
 MANIFEST = os.path.join(GAUGES_ROOT, "facility_inspection_manifest.json")
+# This package's directory, which ships the map_grab / npz_to_map save-map helpers.
+PKG_DIR = os.path.dirname(os.path.realpath(__file__))
 DEFAULT_WS = os.environ.get(
     "GO2_WS",
-    os.path.abspath(os.path.join(os.path.dirname(os.path.realpath(__file__)), "../../../..")),
+    os.path.abspath(os.path.join(PKG_DIR, "../../../..")),
 )
 
 DEFAULT_ZONES = "~/.go2_maps/facility_inspection_zones.yaml"
@@ -482,9 +484,9 @@ class MissionControl(Node):
         npz = os.path.join(self.ws, "maps", f"{self.map_name}_map.npz")
         seg = os.path.join(self.ws, "go2_ws", "src", "go2_zones", "go2_zones", "zone_segmenter.py")
         steps = [
-            (["python3", os.path.join(self.ws, "maps", "map_grab.py"), npz], 30, "grab"),
+            (["python3", os.path.join(PKG_DIR, "map_grab.py"), npz], 30, "grab"),
             (["python3", seg, npz], 60, "zones"),
-            (["python3", os.path.join(self.ws, "maps", "npz_to_map.py"), npz], 30, "pgm"),
+            (["python3", os.path.join(PKG_DIR, "npz_to_map.py"), npz], 30, "pgm"),
         ]
         lines = []
         for cmd, to, label in steps:

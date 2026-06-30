@@ -10,9 +10,9 @@ not stall the MCP stdio loop.
 
 SCOPE: SIMULATION ONLY (talks to the sim's mission_control on the default ROS domain). Nothing WendyOS.
 
-Run via run_mcp_sim.sh (which sources ROS + the sim workspace + the sim's DDS env and uses the venv that
-has fastmcp). Register with Claude CLI:
-    claude mcp add go2-sim -- "/abs/path/to/go2-sim/run_mcp_sim.sh"
+Run via run_mcp_sim.sh (which sources ROS + the sim workspace + the sim's DDS env, then runs this server
+with the python3 on PATH, which must have fastmcp). Register with Claude CLI:
+    claude mcp add go2-sim -- "/abs/path/to/go2-sim/go2_ws/src/run_mcp_sim.sh"
 
 The sim base stack must be running for the tools to do anything:
   - mapping/exploration:  ros2 launch go2_bringup sim_mapping.launch.py world:=maze.sdf headless:=false
